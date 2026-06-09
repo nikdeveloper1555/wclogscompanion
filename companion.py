@@ -22,16 +22,19 @@ into Data.lua each time, so your local database only grows.
 import os
 import re
 import sys
+import gzip
 import time
 import json
 import queue
 import threading
 import datetime
+import urllib.parse
 import urllib.request
 import fetch_parses as F
 
 POLL_SECONDS = 2          # how often to check the SavedVariables file
 RETRY_SECONDS = 180       # also re-run periodically so budget-deferred chars resume after reset
+RESYNC_SECONDS = 3600     # re-pull the community-pool delta this often (long-running companion)
 TTL_HOURS = 6             # don't re-fetch a character more often than this
 NODATA_TTL_DAYS = 7       # a character with no logs isn't re-fetched for this long
 DATA_TTL_DAYS = 7         # drop a character's data if it hasn't refreshed within this
@@ -39,7 +42,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.25"
+APP_VERSION = "1.5.26"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 # Updates come from the GitHub Releases (the CI-built, open-source binary), not the site.
@@ -369,26 +372,49 @@ def upload_to_hub(cfg, results):
         print(f"    -> hub upload skipped ({e}).")
 
 
-def sync_from_hub(cfg, cache):
-    """Seed/refresh the local DB from the community pool on the hub, so the addon shows the WHOLE
-    pool (not just this user's own fetches) and the companion never overwrites the bundled DB
-    with less. Adds pool characters that aren't already in the local cache. Returns count added."""
+def _newer(a, b):
+    """Is ISO timestamp `a` newer than `b`? (Normalizes tz so UTC-hub vs naive-local compare.)"""
+    pa, pb = _parse_dt(a), _parse_dt(b)
+    if pa is None:
+        return False
+    if pb is None:
+        return True
+    return pa > pb
+
+
+def sync_from_hub(cfg, cache, since=None):
+    """Seed/refresh the local DB from the community pool on the hub so the addon shows the WHOLE
+    pool (not just this user's own fetches) and never gets downgraded. Adds new characters AND
+    updates existing ones when the hub's copy is fresher (so a long-running companion keeps pace
+    with the growing pool + harvester refreshes). `since` (ISO ts) pulls only the delta. Returns
+    the count added/updated."""
     url = cfg.get("hub_url")
     if not url:
         return 0
-    try:
-        with urllib.request.urlopen(url.rstrip("/") + "/db", timeout=25) as r:
-            pool = json.loads(r.read().decode("utf-8"))
+    q = "/db" + (f"?since={urllib.parse.quote(since)}" if since else "")
+    try:  # request gzip — the full pool is ~8x smaller compressed (a couple MB -> ~250 KB)
+        req = urllib.request.Request(url.rstrip("/") + q, headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            raw = r.read()
+            if (r.headers.get("Content-Encoding") or "").lower() == "gzip":
+                raw = gzip.decompress(raw)
+        pool = json.loads(raw.decode("utf-8"))
     except Exception as e:
         print(f"    hub sync skipped ({e})")
         return 0
-    added = 0
+    n = 0
     for k, e in (pool or {}).items():
-        if isinstance(e, dict) and "zones" in e and k not in cache["data"]:
-            cache["data"][k] = {"zones": e["zones"], "updated": e.get("updated")}
-            cache["ts"][k] = e.get("ts") or e.get("updated") or ""  # so the data TTL can age it
-            added += 1
-    return added
+        if not (isinstance(e, dict) and "zones" in e):
+            continue
+        hub_ts = e.get("ts") or e.get("updated") or ""
+        if k not in cache["data"] or _newer(hub_ts, cache["ts"].get(k, "")):
+            entry = {"zones": e["zones"], "updated": e.get("updated")}
+            if e.get("slug"):
+                entry["slug"] = e["slug"]
+            cache["data"][k] = entry
+            cache["ts"][k] = hub_ts
+            n += 1
+    return n
 
 
 def process(state):
@@ -776,13 +802,19 @@ def prompt_addon_path(cfg):
 
 
 def build_state(cfg):
-    """Authenticate, discover zones, build the shared state dict, write Data.lua from the locally
-    cached DB right away, then refresh from the community pool IN THE BACKGROUND (so startup is
-    snappy and the window shows your existing DB immediately). May raise on auth/network errors."""
+    """Authenticate (with live feedback so the window never looks frozen), sync the community pool
+    BEFORE the first Data.lua write (so we never downgrade a fresher addon bundle), then keep a
+    long-running companion current via an hourly delta re-sync. May raise on auth/network errors."""
     print("Authenticating to WarcraftLogs…")
     token = F.get_token(cfg)
-    print("✓ Key accepted — authenticated.")
+    print("✓ Key accepted.")
     cache = load_cache()
+    print("Syncing the community pool…")
+    try:  # sync BEFORE the first Data.lua write so we never downgrade a fresh addon bundle
+        n = sync_from_hub(cfg, cache)
+        print(f"Pool: {len(cache.get('data', {}))} characters" + (f"  (+{n} synced)" if n else ""))
+    except Exception as e:
+        print(f"pool sync skipped ({e})")
     zones, token = discover_zones_resilient(cfg, token, cache)
     state = {
         "cfg": cfg, "token": token, "zones": zones,
@@ -794,18 +826,23 @@ def build_state(cfg):
         cache["budget"] = budget_snapshot(aff, rl)
     except Exception:
         pass
-    flush(cfg, cache)  # instant: write Data.lua from what's already cached locally
-    print(f"Ready — {len(cache.get('data', {}))} characters in your DB.")
+    flush(cfg, cache)
+    print("Ready.")
 
-    def _bg_sync():  # refresh from the community pool without delaying the window/watcher
-        try:
-            n = sync_from_hub(cfg, cache)
-            if n:
-                flush(cfg, cache)
-                print(f"synced {n} new character(s) from the community pool — /reload to see them.")
-        except Exception as e:
-            print(f"pool sync skipped ({e}); will retry later.")
-    threading.Thread(target=_bg_sync, daemon=True).start()
+    def _resync_loop():  # keep a long-running companion in step with the growing pool (delta)
+        last = datetime.datetime.now(datetime.timezone.utc)
+        while True:
+            time.sleep(RESYNC_SECONDS)
+            since = (last - datetime.timedelta(minutes=10)).isoformat()
+            last = datetime.datetime.now(datetime.timezone.utc)
+            try:
+                n = sync_from_hub(cfg, cache, since=since)
+                if n:
+                    flush(cfg, cache)
+                    print(f"pool re-sync: +{n} new/updated — /reload to see them.")
+            except Exception as e:
+                print(f"pool re-sync skipped ({e})")
+    threading.Thread(target=_resync_loop, daemon=True).start()
     return state
 
 
