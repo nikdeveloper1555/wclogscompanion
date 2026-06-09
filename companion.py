@@ -38,7 +38,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.16"
+APP_VERSION = "1.5.17"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 EXE_URL = SITE_URL + "/WCLogsEyeCompanion.exe"
@@ -63,13 +63,14 @@ def latest_version():
 
 
 def cleanup_old_exe():
-    """Remove the previous .exe left behind by a self-update (renamed aside, can't delete while
-    it was running). Safe no-op when not frozen / nothing to clean."""
-    if getattr(sys, "frozen", False):
-        old = sys.executable + ".old"
+    """Remove any *.old left behind by a self-update (the previous build, renamed aside — couldn't
+    be deleted while running). Globs the exe's folder so a version-renamed old name is caught too."""
+    if not getattr(sys, "frozen", False):
+        return
+    import glob
+    for f in glob.glob(os.path.join(os.path.dirname(sys.executable), "*.old")):
         try:
-            if os.path.exists(old):
-                os.remove(old)
+            os.remove(f)
         except OSError:
             pass
 
@@ -77,7 +78,8 @@ def cleanup_old_exe():
 def self_update():
     """Download the newest .exe and swap it in for the running one, then relaunch. Windows can't
     overwrite a running .exe, but it CAN rename it: move ourselves to .old, drop the new build in
-    our place, start it, and exit. The fresh instance deletes the .old on startup. Frozen-only;
+    place, start it, and exit. If the filename carries a version (e.g. 'WCLogsEyeCompanion v1.5.15
+    .exe'), the new file is renamed to the new version so the name stays truthful. Frozen-only;
     returns True if a relaunch was started (caller should quit). Best-effort — never crashes."""
     if not getattr(sys, "frozen", False):
         return False
@@ -95,18 +97,26 @@ def self_update():
         except OSError:
             pass
         return False
+    # Keep the version in the filename truthful: rename "...v1.5.15.exe" -> "...v1.5.16.exe".
+    target = exe
+    nv = latest_version()
+    base = os.path.basename(exe)
+    if nv and re.search(r"\d+\.\d+\.\d+", base):
+        target = os.path.join(os.path.dirname(exe), re.sub(r"\d+\.\d+\.\d+", nv, base))
     try:
         if os.path.exists(oldp):
             os.remove(oldp)
-        os.rename(exe, oldp)   # rename the running exe aside (allowed on Windows)
-        os.rename(newp, exe)   # put the new build in our place
+        os.rename(exe, oldp)      # rename the running exe aside (allowed on Windows)
+        os.rename(newp, target)   # put the new build in place (version-correct name)
     except OSError as e:
         print(f"update swap failed ({e})")
         return False
     try:
         import subprocess
-        subprocess.Popen([exe], close_fds=True)
-        print("updated — relaunching the new version…")
+        # Launch detached via the shell ('start "" exe') — a bare Popen([exe]) of a fresh onefile
+        # build sometimes doesn't surface a window when fired from the exiting parent.
+        subprocess.Popen(["cmd", "/c", "start", "", target], close_fds=True)
+        print(f"updated -> {os.path.basename(target)}; relaunching…")
         return True
     except Exception as e:
         print(f"relaunch failed ({e})")
@@ -145,7 +155,7 @@ def _ui_strings():
                   "Not the WoW root and not the WTF folder."),
         ap_browse="Browse…", ap_set="Addon folder…",
         ap_invalid="That folder doesn't exist — pick the WCLogsEye addon folder.",
-        update_avail="⬆ Update  v{cur} → v{new}",
+        update_avail="⬆ Update  v{cur} → v{new}", updating="⬆ Updating…",
         check_upd="Check updates", checking="checking for updates…",
         up_to_date="you're on the latest version (v{v}).", check_failed="update check failed (offline?).",
         show="Show window", min_hint="WCLogs Eye keeps running in the tray.",
@@ -175,7 +185,7 @@ def _ui_strings():
                       "Не корень WoW и не папку WTF."),
             ap_browse="Обзор…", ap_set="Папка аддона…",
             ap_invalid="Папка не найдена — выбери папку аддона WCLogsEye.",
-            update_avail="⬆ Обновить  v{cur} → v{new}",
+            update_avail="⬆ Обновить  v{cur} → v{new}", updating="⬆ Обновление…",
             check_upd="Обновления", checking="проверяю обновления…",
             up_to_date="у тебя последняя версия (v{v}).", check_failed="не удалось проверить (нет сети?).",
             show="Открыть окно", min_hint="WCLogs Eye свёрнут в трей и работает.",
@@ -1025,23 +1035,31 @@ def run_app():
                     fg_color=ACCENT, hover_color="#e6b317").pack(side="right")
 
     # ---- "update available" button (hidden until a newer version is published; click to update) ----
-    def do_update():
+    upd = {"shown": False, "v": ""}
+
+    def do_update():  # download+swap in a thread (no UI freeze); relaunch + quit, or browser fallback
+        update_btn.configure(state="disabled", text=S["updating"])
         print("updating…")
-        if self_update():            # frozen: download, swap, relaunch -> close this instance
-            quit_all()
-        else:                        # dev / self-update failed -> open the download in a browser
-            import webbrowser
-            webbrowser.open(EXE_URL)
+
+        def run():
+            if self_update():
+                win.after(0, quit_all)
+            else:
+                import webbrowser
+                webbrowser.open(EXE_URL)
+                win.after(0, lambda: update_btn.configure(
+                    state="normal", text=S["update_avail"].format(cur=APP_VERSION, new=upd["v"])))
+        threading.Thread(target=run, daemon=True).start()
     # Own full-width row (not in the button bar) so it never crowds/overlaps the action buttons.
     update_btn = ctk.CTkButton(win, text="", command=do_update, height=36, corner_radius=9,
                                font=ctk.CTkFont(size=13, weight="bold"),
                                fg_color="#33d17a", text_color="#0a1f12", hover_color="#2bb869")
-    upd = {"shown": False}
 
     def show_update(v):
         if upd["shown"]:
             return
         upd["shown"] = True
+        upd["v"] = v
         update_btn.configure(text=S["update_avail"].format(cur=APP_VERSION, new=v))
         update_btn.pack(fill="x", padx=16, pady=(0, 8), before=logbox)
         print(f"update available: you have v{APP_VERSION}, latest is v{v} — click the green button to update.")
