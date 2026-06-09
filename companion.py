@@ -38,7 +38,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.22"
+APP_VERSION = "1.5.23"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 EXE_URL = SITE_URL + "/WCLogsEyeCompanion.exe"
@@ -800,9 +800,17 @@ def watch_loop(state, stop_event=None, on_pass=None):
         except OSError:
             return None
 
-    process(state)
-    if on_pass:
-        on_pass()
+    def _pass():
+        # NEVER let one bad pass kill the watcher thread — otherwise auto-fetch silently dies and
+        # only the manual "Fetch queue" button (a fresh thread per click) keeps working.
+        try:
+            process(state)
+        except Exception as e:
+            print(f"[{now_iso()}] watch pass error ({e}); will retry next pass.")
+        if on_pass:
+            on_pass()
+
+    _pass()
     last_mtime, last_run = cur_mtime(), time.time()
     while not (stop_event and stop_event.is_set()):
         mtime = cur_mtime()
@@ -812,9 +820,7 @@ def watch_loop(state, stop_event=None, on_pass=None):
             if changed:
                 state["stopped"] = False  # /reload in-game resumes a paused companion
             last_mtime, last_run = mtime, now
-            process(state)
-            if on_pass:
-                on_pass()
+            _pass()
         time.sleep(POLL_SECONDS)
 
 
