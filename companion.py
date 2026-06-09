@@ -38,10 +38,12 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.23"
+APP_VERSION = "1.5.24"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
-EXE_URL = SITE_URL + "/WCLogsEyeCompanion.exe"
+# Updates come from the GitHub Releases (the CI-built, open-source binary), not the site.
+GITHUB_REPO = "nikdeveloper1555/wclogscompanion"
+EXE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/WCLogsEyeCompanion.exe"
 
 
 def _ver_tuple(v):
@@ -50,13 +52,15 @@ def _ver_tuple(v):
 
 
 def latest_version():
-    """The version published on the site, read from the .exe's Content-Disposition filename
-    (e.g. 'WCLogsEyeCompanion v1.5.11.exe'). None on any error — update check is best-effort."""
+    """Latest published version from the GitHub Releases API (tag_name, e.g. 'v1.5.24'). None on
+    any error — update check is best-effort (unauthenticated API is 60/hr/IP; we poll ~2/hr)."""
     try:
-        req = urllib.request.Request(EXE_URL, method="HEAD")
+        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                                     headers={"Accept": "application/vnd.github+json",
+                                              "User-Agent": "WCLogsEye"})
         with urllib.request.urlopen(req, timeout=15) as r:
-            cd = r.headers.get("Content-Disposition") or ""
-        m = re.search(r"v(\d+(?:\.\d+)+)", cd)
+            tag = json.loads(r.read().decode("utf-8")).get("tag_name") or ""
+        m = re.search(r"(\d+(?:\.\d+)+)", tag)
         return m.group(1) if m else None
     except Exception:
         return None

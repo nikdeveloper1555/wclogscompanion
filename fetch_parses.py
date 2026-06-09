@@ -650,7 +650,7 @@ def make_queries(zones, metrics):
 
 
 def fetch_roster(token, zones, metrics, queue, on_each=None,
-                 concurrency=DEFAULT_CONCURRENCY, budget=None, abort=None):
+                 concurrency=DEFAULT_CONCURRENCY, budget=None, abort=None, pace_seconds=None):
     """Fetch `queue` concurrently (up to `concurrency` requests in flight) to push one WCL
     client toward its hourly points ceiling. Returns {key: entry}.
 
@@ -663,8 +663,10 @@ def fetch_roster(token, zones, metrics, queue, on_each=None,
     data = {}
     stop = threading.Event()  # tripped on the hourly ceiling so queued workers bail out fast
 
-    # Global pacer: never start requests closer than PACE_SECONDS apart, across all workers, so
-    # we stay under WCL's undocumented per-IP burst cap even at higher concurrency.
+    # Global pacer: never start requests closer than `gap` apart, across all workers, so we stay
+    # under WCL's undocumented per-IP burst cap even at higher concurrency. Callers (e.g. the
+    # always-on harvester) can pass a slower pace_seconds to be gentler.
+    gap = pace_seconds if pace_seconds else PACE_SECONDS
     pace_lock = threading.Lock()
     next_start = [0.0]
 
@@ -674,7 +676,7 @@ def fetch_roster(token, zones, metrics, queue, on_each=None,
             wait = next_start[0] - now
             if wait > 0:
                 time.sleep(wait)
-            next_start[0] = max(now, next_start[0]) + PACE_SECONDS
+            next_start[0] = max(now, next_start[0]) + gap
 
     def work(item):
         name, realm, region = item
