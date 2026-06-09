@@ -4,6 +4,10 @@ This is the **open source of the WCLogs Eye companion app** (`WCLogsEyeCompanion
 Windows tool that fetches WarcraftLogs parses **under your own free API key** and writes them into
 the [WCLogs Eye](https://www.curseforge.com/wow/addons/wclogs-eye) WoW addon's database.
 
+**Download:** grab `WCLogsEyeCompanion.exe` from the [latest release](../../releases/latest) (built
+by CI from this repo), or from [wclogseye.top](https://wclogseye.top). Both sync the community
+parse database out of the box.
+
 It's published so you can **read exactly what the .exe does** and, if you want, **build it yourself**
 instead of trusting a pre-built binary. The companion:
 
@@ -32,13 +36,13 @@ build.bat            # or run the PyInstaller line inside it
 ```
 
 The build drops `WCLogsEyeCompanion.exe` in `dist/`. A GitHub Actions workflow
-(`.github/workflows/build.yml`) builds it on every push and uploads the result as an artifact,
-so you can compare a CI-built binary against the published one.
+(`.github/workflows/build.yml`) builds it on every push and **publishes it to
+[Releases](../../releases)**, so you can download a CI-built binary or compare it to the published one.
 
-> Note: the **official** release baked at [wclogseye.top](https://wclogseye.top) includes a default
-> hub endpoint (so data is shared with the community pool). A self-built binary without
-> `hub_defaults.json` is identical in code but runs fully local — that difference is by design, the
-> hub credential is intentionally not in this repo.
+> Note: CI/official builds bake the **public hub URL**, so they read the shared community DB out of
+> the box (reading needs no credential). *Uploading* your results to the pool is gated by a token
+> that is intentionally not in this repo — a self-build without it still fetches and syncs, it just
+> doesn't contribute back. A fully manual `build.bat` with no `hub_defaults.json` runs local-only.
 
 ## Privacy
 

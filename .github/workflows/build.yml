@@ -1,10 +1,17 @@
-name: Build companion .exe
+name: Build & release companion .exe
 
-# Builds WCLogsEyeCompanion.exe on every push and uploads it as an artifact, so anyone can
-# verify a CI-built binary against the published one. (A self-build has no baked hub by design.)
+# Builds WCLogsEyeCompanion.exe and publishes it to GitHub Releases (tagged by the app version),
+# so anyone can download it directly and/or verify it against the published build.
+# The public hub URL is baked by default, so a released build SYNCS the community DB out of the
+# box (reading the pool needs no token). Add an optional HUB_TOKEN repo secret to also let the
+# build UPLOAD results to the pool (the /submit endpoint is token-gated).
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create/update the Release
 
 jobs:
   build:
@@ -15,12 +22,34 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: copy hub_defaults.example.json hub_defaults.json
-      - run: >
-          pyinstaller --onefile --windowed --name WCLogsEyeCompanion --icon icon.ico
-          --add-data "hub_defaults.json;." --add-data "icon.ico;." --add-data "success.wav;."
-          --hidden-import pystray._win32 --collect-all customtkinter companion.py
-      - uses: actions/upload-artifact@v4
+
+      - name: Bake hub config (public hub URL by default -> DB sync works; token optional for upload)
+        shell: bash
+        run: |
+          HUB_URL="${{ secrets.HUB_URL }}"
+          if [ -z "$HUB_URL" ]; then HUB_URL="https://wclogseye.top/api"; fi
+          printf '{"hub_url":"%s","hub_token":"%s"}' "$HUB_URL" "${{ secrets.HUB_TOKEN }}" > hub_defaults.json
+
+      - name: Build the .exe
+        shell: bash
+        run: |
+          pyinstaller --onefile --windowed --name WCLogsEyeCompanion --icon icon.ico \
+            --add-data "hub_defaults.json;." --add-data "icon.ico;." --add-data "success.wav;." \
+            --hidden-import pystray._win32 --collect-all customtkinter companion.py
+
+      - name: Read app version
+        id: ver
+        shell: bash
+        run: echo "v=$(grep -oE 'APP_VERSION = \"[0-9.]+\"' companion.py | grep -oE '[0-9.]+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: WCLogsEyeCompanion
-          path: dist/WCLogsEyeCompanion.exe
+          tag_name: v${{ steps.ver.outputs.v }}
+          name: WCLogs Eye Companion v${{ steps.ver.outputs.v }}
+          files: dist/WCLogsEyeCompanion.exe
+          make_latest: true
+          body: |
+            Windows companion for the WCLogs Eye addon.
+            Download **WCLogsEyeCompanion.exe** below, run it, enter your free WarcraftLogs API key.
+            Source for this build is in this repo. Official site: https://wclogseye.top
