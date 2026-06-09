@@ -284,6 +284,8 @@ def read_queue(savedvars_path):
     entries = []
     for m in re.finditer(r'\["([^"]*?)\t([^"]*?)\t([^"]*?)"\]', scope):
         name, realm, region = m.group(1), m.group(2), m.group(3)
+        if "|" in name or "|" in realm:
+            continue  # WoW escape token (e.g. protected LFG name "|Kj18|k") -> not a real char
         entries.append((name, realm, region))
     return entries
 
@@ -530,10 +532,12 @@ def build_raid_block(zr, metric, diff_label):
 
 
 def _role_match(spec, metric):
-    """For hps blocks keep healer specs; for dps blocks keep actual DPS specs."""
+    """hps block -> healer specs. dps block -> every NON-healer (damage dealers AND tanks):
+    WCL has no separate tank metric, it ranks tanks under `dps` (low %), so excluding tank specs
+    here dropped tanks entirely ('no data' for a Guardian/Blood/etc.). Include them."""
     if metric == "hps":
         return spec in HEALER_SPECS
-    return _is_dps_spec(spec)
+    return bool(spec) and spec not in HEALER_SPECS
 
 
 def build_mplus_block(zone, char, metric):
