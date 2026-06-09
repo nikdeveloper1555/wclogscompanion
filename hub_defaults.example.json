@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy to hub_defaults.json (gitignored) to bake a default hub into the built .exe via PyInstaller --add-data. config.json overrides these. Leave empty to disable.",
+  "hub_url": "",
+  "hub_token": ""
+}

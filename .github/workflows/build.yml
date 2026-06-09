@@ -1,0 +1,26 @@
+name: Build companion .exe
+
+# Builds WCLogsEyeCompanion.exe on every push and uploads it as an artifact, so anyone can
+# verify a CI-built binary against the published one. (A self-build has no baked hub by design.)
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: copy hub_defaults.example.json hub_defaults.json
+      - run: >
+          pyinstaller --onefile --windowed --name WCLogsEyeCompanion --icon icon.ico
+          --add-data "hub_defaults.json;." --add-data "icon.ico;." --add-data "success.wav;."
+          --hidden-import pystray._win32 --collect-all customtkinter companion.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WCLogsEyeCompanion
+          path: dist/WCLogsEyeCompanion.exe

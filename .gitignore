@@ -1,0 +1,12 @@
+# Local secrets / state — NEVER commit
+hub_defaults.json
+config.json
+cache.json
+*.log
+
+# Python / PyInstaller build artifacts
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
