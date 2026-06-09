@@ -25,6 +25,7 @@ import sys
 import time
 import json
 import queue
+import threading
 import datetime
 import urllib.request
 import fetch_parses as F
@@ -38,7 +39,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.24"
+APP_VERSION = "1.5.25"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 # Updates come from the GitHub Releases (the CI-built, open-source binary), not the site.
@@ -318,19 +319,23 @@ def _status_lua(b):
     return "\n".join(out)
 
 
+_FLUSH_LOCK = threading.Lock()  # serialize Data.lua writes (background sync + watcher can overlap)
+
+
 def flush(cfg, cache):
     """Write Data.lua (DB + budget status) from the full cache and persist cache.json."""
-    _prune_old(cache)  # data TTL: forget characters not refreshed within DATA_TTL_DAYS
-    save_cache(cache)  # cache.json is independent of the addon folder -> always persist
-    ap = cfg.get("addon_path")
-    if not ap or not os.path.isdir(ap):
-        print("[!] addon folder not set — skipping Data.lua. Use “Addon folder…” to set it.")
-        return
-    out = os.path.join(ap, "Data.lua")
-    text = F.render_data_lua(cache["data"], datetime.date.today().isoformat())
-    text += _status_lua(cache.get("budget"))
-    with open(out, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    with _FLUSH_LOCK:
+        _prune_old(cache)  # data TTL: forget characters not refreshed within DATA_TTL_DAYS
+        save_cache(cache)  # cache.json is independent of the addon folder -> always persist
+        ap = cfg.get("addon_path")
+        if not ap or not os.path.isdir(ap):
+            print("[!] addon folder not set — skipping Data.lua. Use “Addon folder…” to set it.")
+            return
+        out = os.path.join(ap, "Data.lua")
+        text = F.render_data_lua(cache["data"], datetime.date.today().isoformat())
+        text += _status_lua(cache.get("budget"))
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(text)
 
 
 def upload_to_hub(cfg, results):
@@ -771,25 +776,36 @@ def prompt_addon_path(cfg):
 
 
 def build_state(cfg):
-    """Authenticate, discover zones, build the shared state dict, and write an initial budget
-    snapshot. Assumes the WCL key is already present in cfg. May raise on auth/network errors."""
+    """Authenticate, discover zones, build the shared state dict, write Data.lua from the locally
+    cached DB right away, then refresh from the community pool IN THE BACKGROUND (so startup is
+    snappy and the window shows your existing DB immediately). May raise on auth/network errors."""
+    print("Authenticating to WarcraftLogs…")
     token = F.get_token(cfg)
+    print("✓ Key accepted — authenticated.")
     cache = load_cache()
-    synced = sync_from_hub(cfg, cache)  # seed the local DB from the community pool
-    if synced:
-        print(f"synced {synced} characters from the community pool")
     zones, token = discover_zones_resilient(cfg, token, cache)
     state = {
         "cfg": cfg, "token": token, "zones": zones,
         "metrics": cfg.get("metrics") or ["dps", "hps"], "cache": cache,
         "concurrency": int(cfg.get("concurrency", F.DEFAULT_CONCURRENCY)),
     }
-    try:  # write Data.lua (pool + budget status) so the in-game DB is restored right away
+    try:
         aff, rl = F.affordable_chars(token)
         cache["budget"] = budget_snapshot(aff, rl)
     except Exception:
         pass
-    flush(cfg, cache)
+    flush(cfg, cache)  # instant: write Data.lua from what's already cached locally
+    print(f"Ready — {len(cache.get('data', {}))} characters in your DB.")
+
+    def _bg_sync():  # refresh from the community pool without delaying the window/watcher
+        try:
+            n = sync_from_hub(cfg, cache)
+            if n:
+                flush(cfg, cache)
+                print(f"synced {n} new character(s) from the community pool — /reload to see them.")
+        except Exception as e:
+            print(f"pool sync skipped ({e}); will retry later.")
+    threading.Thread(target=_bg_sync, daemon=True).start()
     return state
 
 
