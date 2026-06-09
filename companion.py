@@ -38,7 +38,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.17"
+APP_VERSION = "1.5.22"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 EXE_URL = SITE_URL + "/WCLogsEyeCompanion.exe"
@@ -113,9 +113,23 @@ def self_update():
         return False
     try:
         import subprocess
-        # Launch detached via the shell ('start "" exe') — a bare Popen([exe]) of a fresh onefile
-        # build sometimes doesn't surface a window when fired from the exiting parent.
-        subprocess.Popen(["cmd", "/c", "start", "", target], close_fds=True)
+        import tempfile
+        # Relaunch via a tiny detached .bat. CRUCIAL: clear _MEIPASS2 — a PyInstaller onefile child
+        # inherits it and reuses the PARENT's _MEI temp dir, which the parent deletes on exit, so
+        # the new exe fails with "Failed to load Python DLL ... python313.dll". Clearing it forces a
+        # fresh extraction. The short wait lets the parent release its (now .old) file handle.
+        bat = os.path.join(tempfile.gettempdir(), "wclogseye_update.bat")
+        with open(bat, "w", encoding="ascii") as fh:
+            fh.write("@echo off\r\n"
+                     "set _MEIPASS2=\r\n"
+                     "set _PYI_ONEDIR_MODE=\r\n"
+                     "ping 127.0.0.1 -n 2 >nul\r\n"
+                     'start "" "%s"\r\n' % target +
+                     'del "%~f0"\r\n')
+        env = {k: v for k, v in os.environ.items() if k not in ("_MEIPASS2", "_PYI_ONEDIR_MODE")}
+        DETACHED, NOWINDOW = 0x00000008, 0x08000000
+        subprocess.Popen(["cmd", "/c", bat], close_fds=True, env=env,
+                         creationflags=DETACHED | NOWINDOW)
         print(f"updated -> {os.path.basename(target)}; relaunching…")
         return True
     except Exception as e:
