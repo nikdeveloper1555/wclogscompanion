@@ -5,8 +5,10 @@ Windows tool that fetches WarcraftLogs parses **under your own free API key** an
 the [WCLogs Eye](https://www.curseforge.com/wow/addons/wclogs-eye) WoW addon's database.
 
 **Download:** grab `WCLogsEyeCompanion.exe` from the [latest release](../../releases/latest) (built
-by CI from this repo), or from [wclogseye.top](https://wclogseye.top). Both sync the community
-parse database out of the box.
+by CI from this repo) or from [wclogseye.top](https://wclogseye.top). **Both are the same build** —
+same source, same version, both fully connected: they sync the shared parse database *and* contribute
+your fetched results back to it. (PyInstaller isn't byte-reproducible, so the two binaries behave
+identically but aren't bit-for-bit equal.)
 
 It's published so you can **read exactly what the .exe does** and, if you want, **build it yourself**
 instead of trusting a pre-built binary. The companion:
@@ -39,10 +41,11 @@ The build drops `WCLogsEyeCompanion.exe` in `dist/`. A GitHub Actions workflow
 (`.github/workflows/build.yml`) builds it on every push and **publishes it to
 [Releases](../../releases)**, so you can download a CI-built binary or compare it to the published one.
 
-> Note: CI/official builds bake the **public hub URL**, so they read the shared community DB out of
-> the box (reading needs no credential). *Uploading* your results to the pool is gated by a token
-> that is intentionally not in this repo — a self-build without it still fetches and syncs, it just
-> doesn't contribute back. A fully manual `build.bat` with no `hub_defaults.json` runs local-only.
+> Note: CI/official builds bake the public hub URL **and** the submit token (the token lives only
+> in this repo's GitHub Actions secret, never in the source), so they fully sync **and** contribute
+> to the community pool. If you build it yourself without that token, it still fetches and syncs the
+> pool — it just won't upload back. A manual `build.bat` with no `hub_defaults.json` runs local-only.
+> The hub validates and rate-limits every submission, so the baked token can't be used to poison it.
 
 ## Privacy
 

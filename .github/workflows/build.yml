@@ -8,6 +8,7 @@ name: Build & release companion .exe
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
   workflow_dispatch:
 
 permissions:
