@@ -42,7 +42,7 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.26"
+APP_VERSION = "1.5.27"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 # Updates come from the GitHub Releases (the CI-built, open-source binary), not the site.

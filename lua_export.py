@@ -11,44 +11,41 @@ def lua_escape(s):
 
 
 def render_data_lua(data, updated):
-    """Serialize the character DB to a Data.lua string. Each entry may carry its own
-    "updated" date (used by the hub, where data comes from many users at different times);
-    otherwise the passed-in `updated` is used."""
-    lines = ["-- AUTO-GENERATED. Do not edit by hand.",
-             "WarcraftLogsTipsData = {"]
+    """Serialize the character DB to a Data.lua string — COMPACT (one line per character, no
+    indentation) to keep the addon small at scale. Lua parses it identically to a pretty-printed
+    table, so the addon needs no changes. Field names are preserved (best/median/metric/name/pct/
+    key/kills/rank/diff/label/kind/zones/blocks/bosses/slug/updated). `amount` and `score` are
+    intentionally dropped — the addon never reads them (dead weight at thousands of entries).
+    Each entry may carry its own "updated" date; otherwise the passed-in `updated` is used."""
+    out = ["-- AUTO-GENERATED. Do not edit by hand.", "WarcraftLogsTipsData = {"]
     for key, entry in data.items():
-        lines.append(f'    ["{lua_escape(key)}"] = {{')
-        lines.append(f'        updated = "{lua_escape(entry.get("updated") or updated)}",')
+        parts = ['updated="%s"' % lua_escape(entry.get("updated") or updated)]
         if entry.get("slug"):  # WCL realm slug, for building the character URL in-game
-            lines.append(f'        slug = "{lua_escape(entry["slug"])}",')
-        lines.append('        zones = {')
+            parts.append('slug="%s"' % lua_escape(entry["slug"]))
+        zbits = []
         for zone in entry["zones"]:
-            lines.append('            {')
-            lines.append(f'                label = "{lua_escape(zone["label"])}",')
-            lines.append(f'                kind  = "{lua_escape(zone["kind"])}",')
-            lines.append('                blocks = {')
+            blkbits = []
             for blk in zone["blocks"]:
-                lines.append('                    {')
-                lines.append(f'                        metric = "{lua_escape(blk["metric"])}",')
-                if blk.get("diff"):
-                    lines.append(f'                        diff   = "{lua_escape(blk["diff"])}",')
-                lines.append(f'                        best   = {blk["best"]},')
-                lines.append(f'                        median = {blk["median"]},')
-                lines.append('                        bosses = {')
+                bosses = []
                 for b in blk["bosses"]:
-                    parts = ['name = "%s"' % lua_escape(b["name"]), "pct = %d" % b["pct"]]
-                    for fld in ("key", "score", "amount", "kills", "rank"):
+                    bp = ['name="%s"' % lua_escape(b["name"]), "pct=%d" % b["pct"]]
+                    for fld in ("key", "kills", "rank"):  # dropped: amount, score (unused by addon)
                         if fld in b:
-                            parts.append("%s = %d" % (fld, b[fld]))
-                    lines.append("                            { " + ", ".join(parts) + " },")
-                lines.append('                        },')
-                lines.append('                    },')
-            lines.append('                },')
-            lines.append('            },')
-        lines.append('        },')
-        lines.append('    },')
-    lines.append("}")
-    return "\n".join(lines) + "\n"
+                            bp.append("%s=%d" % (fld, b[fld]))
+                    bosses.append("{" + ",".join(bp) + "}")
+                blkparts = ['metric="%s"' % lua_escape(blk["metric"])]
+                if blk.get("diff"):
+                    blkparts.append('diff="%s"' % lua_escape(blk["diff"]))
+                blkparts.append("best=%s" % blk["best"])
+                blkparts.append("median=%s" % blk["median"])
+                blkparts.append("bosses={%s}" % ",".join(bosses))
+                blkbits.append("{" + ",".join(blkparts) + "}")
+            zbits.append('{label="%s",kind="%s",blocks={%s}}'
+                         % (lua_escape(zone["label"]), lua_escape(zone["kind"]), ",".join(blkbits)))
+        parts.append("zones={%s}" % ",".join(zbits))
+        out.append('["%s"]={%s},' % (lua_escape(key), ",".join(parts)))
+    out.append("}")
+    return "\n".join(out) + "\n"
 
 
 def write_data_lua(path, data, updated):
