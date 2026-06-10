@@ -42,12 +42,17 @@ HERE = F._base_dir()      # next to the .exe when frozen, else next to the scrip
 CACHE_PATH = os.path.join(HERE, "cache.json")
 
 APP_NAME = "WCLogs Eye"
-APP_VERSION = "1.5.27"
+APP_VERSION = "1.5.28"
 WCL_CLIENTS_URL = "https://www.warcraftlogs.com/api/clients/"
 SITE_URL = "https://wclogseye.top"
 # Updates come from the GitHub Releases (the CI-built, open-source binary), not the site.
 GITHUB_REPO = "nikdeveloper1555/wclogscompanion"
 EXE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/WCLogsEyeCompanion.exe"
+# Addon code auto-update (replaces CurseForge, which rejected us): the site serves the latest addon
+# zip + a version marker; the companion refreshes the addon's .lua files when a newer version ships.
+ADDON_ZIP_URL = SITE_URL + "/WCLogsEye.zip"
+ADDON_VERSION_URL = SITE_URL + "/WCLogsEye.version"
+ADDON_CODE_FILES = ("Core.lua", "Locale.lua", "WCLogsEye.toc", "icon.tga")  # NOT Data.lua (we own it)
 
 
 def _ver_tuple(v):
@@ -68,6 +73,54 @@ def latest_version():
         return m.group(1) if m else None
     except Exception:
         return None
+
+
+def _installed_addon_version(cfg):
+    """The addon's ## Version from the installed WCLogsEye.toc (its base, ignoring any -timestamp)."""
+    ap = cfg.get("addon_path")
+    toc = os.path.join(ap, "WCLogsEye.toc") if ap else None
+    if toc and os.path.exists(toc):
+        try:
+            for line in open(toc, encoding="utf-8", errors="ignore"):
+                m = re.match(r"##\s*Version:\s*(\S+)", line)
+                if m:
+                    return m.group(1).split("-")[0]
+        except OSError:
+            pass
+    return None
+
+
+def update_addon_if_newer(cfg):
+    """Auto-update the ADDON's code files from the site when a newer version is published — this is
+    what CurseForge used to do (it rejected us). Data.lua is left alone; the companion syncs it.
+    Best-effort; needs a valid addon_path."""
+    ap = cfg.get("addon_path")
+    if not ap or not os.path.isdir(ap):
+        return
+    try:
+        site_ver = urllib.request.urlopen(ADDON_VERSION_URL, timeout=15).read().decode("utf-8").strip()
+        site_ver = site_ver.split("-")[0]  # compare base only (the .zip's toc carries a -timestamp)
+    except Exception:
+        return
+    local = _installed_addon_version(cfg) or ""
+    if _ver_tuple(site_ver) <= _ver_tuple(local):
+        return  # already current (or newer locally)
+    try:
+        import io
+        import zipfile
+        blob = urllib.request.urlopen(ADDON_ZIP_URL, timeout=60).read()
+        zf = zipfile.ZipFile(io.BytesIO(blob))
+        wrote = 0
+        for member in zf.namelist():
+            fn = os.path.basename(member)
+            if fn in ADDON_CODE_FILES:  # excludes Data.lua by design
+                with zf.open(member) as src, open(os.path.join(ap, fn), "wb") as dst:
+                    dst.write(src.read())
+                wrote += 1
+        if wrote:
+            print(f"addon updated: v{local or '?'} -> v{site_ver} ({wrote} files). /reload in-game.")
+    except Exception as e:
+        print(f"addon update skipped ({e})")
 
 
 def cleanup_old_exe():
@@ -805,6 +858,7 @@ def build_state(cfg):
     """Authenticate (with live feedback so the window never looks frozen), sync the community pool
     BEFORE the first Data.lua write (so we never downgrade a fresher addon bundle), then keep a
     long-running companion current via an hourly delta re-sync. May raise on auth/network errors."""
+    update_addon_if_newer(cfg)  # refresh the addon's code from the site (replaces CurseForge updates)
     print("Authenticating to WarcraftLogs…")
     token = F.get_token(cfg)
     print("✓ Key accepted.")
